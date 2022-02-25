@@ -3,13 +3,18 @@ package conformance
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math/big"
+	"net"
+	"net/http"
 	"os"
+	"runtime"
 	"strconv"
+	"time"
 
 	"github.com/bloodorangeio/reggie"
 	"github.com/google/uuid"
@@ -71,6 +76,7 @@ const (
 	envVarDeleteManifestBeforeBlobs = "OCI_DELETE_MANIFEST_BEFORE_BLOBS"
 	envVarCrossmountNamespace       = "OCI_CROSSMOUNT_NAMESPACE"
 	envVarAutomaticCrossmount       = "OCI_AUTOMATIC_CROSSMOUNT"
+	envVarVerifyTLS                 = "OCI_VERIFY_TLS"
 
 	emptyLayerTestTag = "emptylayer"
 	testTagName       = "tagtest0"
@@ -144,12 +150,19 @@ func init() {
 	username := os.Getenv(envVarUsername)
 	password := os.Getenv(envVarPassword)
 	authScope := os.Getenv(envVarAuthScope)
+
 	crossmountNamespace = os.Getenv(envVarCrossmountNamespace)
 	if len(crossmountNamespace) == 0 {
 		crossmountNamespace = fmt.Sprintf("conformance-%s", uuid.New())
 	}
 
 	debug, _ := strconv.ParseBool(os.Getenv(envVarDebug))
+
+	isVerifyTLS := true
+	verifyTLS := os.Getenv(envVarVerifyTLS)
+	if len(verifyTLS) > 0 {
+		isVerifyTLS, _ = strconv.ParseBool(verifyTLS)
+	}
 
 	for envVar, enableTest := range testMap {
 		if varIsTrue, _ := strconv.ParseBool(os.Getenv(envVar)); varIsTrue {
@@ -171,6 +184,11 @@ func init() {
 
 	client.SetLogger(logger)
 	client.SetCookieJar(nil)
+
+	// if we want to disable verify TLS, change the transport config
+	if !isVerifyTLS {
+		client.SetTransport(createTransport(isVerifyTLS))
+	}
 
 	// create a unique config for each workflow category
 	for i := 0; i < 4; i++ {
@@ -331,6 +349,28 @@ func init() {
 	reportJUnitFilename = "junit.xml"
 	reportHTMLFilename = "report.html"
 	suiteDescription = "OCI Distribution Conformance Tests"
+}
+
+func createTransport(isVerifyTLS bool) *http.Transport {
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+		DualStack: true,
+	}
+
+	return &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           dialer.DialContext,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		MaxIdleConnsPerHost:   runtime.GOMAXPROCS(0) + 1,
+		DisableCompression:    true,
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: !isVerifyTLS,
+		},
+	}
 }
 
 func SkipIfDisabled(test int) {
